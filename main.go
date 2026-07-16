@@ -11,32 +11,31 @@ func main() {
 
 	goroutineChannels()
 
-	// goroutineWorkerPools()
+	goroutineWorkerPools()
 }
 
-// examples of goroutines with waitgroups
+// goroutineBasics shows launching goroutines and waiting for them with a WaitGroup.
 func goroutineBasics() {
-	// start a waitgroup to track how many goroutines are running
-	// wg.Add increments, wg.Done decrements, go.Wait blocks until counter is 0
+	// WaitGroup tracks how many goroutines are still running.
+	// Add increases the counter, Done decreases it, Wait blocks until it hits 0.
 	var wg sync.WaitGroup
 
-	// to start a goroutine, use the go command with a function
-	// you can use a function literal (anonymous function)
-	wg.Add(2) // track the 2 goroutine we are going to run
+	// Start a goroutine with `go`. Function literals (anonymous funcs) work fine.
+	wg.Add(2) // we will start 2 goroutines
 	go func() {
-		defer wg.Done()
+		defer wg.Done() // always Done when this goroutine exits
 		response := "Hello, World!"
 		time.Sleep(time.Millisecond * 1000)
 		fmt.Println(response)
 	}()
 
-	// or a function defined elsewhere
+	// Named functions work the same way — pass a pointer to the WaitGroup.
 	go greet("Robert", &wg)
 
-	wg.Wait() // will wait until all wg.Done
+	wg.Wait() // block until both goroutines call Done
 }
 
-// greet function used within goroutineBasics
+// greet is a named function used as a goroutine in goroutineBasics.
 func greet(name string, wg *sync.WaitGroup) {
 	defer wg.Done()
 
@@ -45,31 +44,81 @@ func greet(name string, wg *sync.WaitGroup) {
 	fmt.Println(response)
 }
 
-// this function demonstrates how to use a channel
+//
+// CHANNELS
+//
+
+// goroutineChannels shows sending a value from a goroutine to main via a channel.
 func goroutineChannels() {
-	// messages channel that accepts a string initialised
+	// Unbuffered channel: send blocks until something receives (and vice versa).
 	messages := make(chan string)
 
-	// call greetViaChannel as a goroutine passing through the channel we have created
-	// if we had used a function literal then we could access messages directly instead of passing
+	// Pass the channel in. A function literal could close over messages instead.
 	go greetViaChannel("John", messages)
 
-	// single receive - idiomatic when you expect exactly one value
+	// Single receive — fine when you expect exactly one value.
 	msg := <-messages
 	fmt.Println(msg)
 
-	// Multi-receive - runs until the sender closes the channel
+	// Multi-receive alternative: range until the sender closes the channel.
 	// for msg := range messages {
 	//     fmt.Println(msg)
 	// }
 }
 
+// greetViaChannel writes one message then closes. Only the sender should close.
 func greetViaChannel(name string, ch chan<- string) {
 	response := "Hello, " + name + "!"
 	time.Sleep(time.Millisecond * 500)
 
-	// write the response message to the channel
-	// we will wait here until there is a matching read from the channel
+	// Send blocks until main receives (unbuffered channel).
 	ch <- response
-	close(ch) // close channel at sender
+	close(ch)
+}
+
+//
+// WORKER POOLS
+//
+
+// worker pulls jobs from jobs, does work, and pushes results. jobs is receive-only
+// (<-chan) and results is send-only (chan<-) so the direction of data is clear.
+func worker(id int, jobs <-chan int, results chan<- int) {
+	// range over jobs ends when jobs is closed and drained.
+	for j := range jobs {
+		fmt.Println("worker", id, "started job", j)
+		time.Sleep(time.Second)
+		fmt.Println("worker", id, "finished job", j)
+		results <- j * 2
+	}
+}
+
+// goroutineWorkerPools runs a fixed pool of workers over a batch of jobs.
+func goroutineWorkerPools() {
+	const numJobs = 10
+	const poolSize = 4
+
+	// Buffered channels sized to numJobs so we can enqueue all work (and collect
+	// all results) without the main goroutine blocking on every send/receive.
+	// Without the buffer, main could deadlock: workers might be busy while main
+	// is stuck trying to send the next job, or waiting on a result that can't
+	// be written because results is full and nobody is reading yet.
+	jobs := make(chan int, numJobs)
+	results := make(chan int, numJobs)
+
+	// Start a fixed pool — only poolSize goroutines, not one per job.
+	for w := 1; w <= poolSize; w++ {
+		go worker(w, jobs, results)
+	}
+
+	// Feed all jobs, then close so workers know no more work is coming
+	// (range in worker exits after the last value).
+	for j := 1; j <= numJobs; j++ {
+		jobs <- j
+	}
+	close(jobs)
+
+	// Collect one result per job. This also keeps main alive until work finishes.
+	for a := 1; a <= numJobs; a++ {
+		<-results
+	}
 }
